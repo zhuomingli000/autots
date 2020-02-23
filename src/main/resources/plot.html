@@ -1,0 +1,610 @@
+<!-- saved from url=(0014)about:internet -->
+<!-- above comment enable javascript in IE -->
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+	canvas {
+		float: left;
+		margin-right: 40px;
+	}
+</style>
+<script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.10.3/moment.min.js"></script>
+<script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/moment-timezone/0.4.0/moment-timezone.min.js"></script>
+<!-- <script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/moment-timezone/0.4.0/moment-timezone-utils.min.js"></script> -->
+</head>
+<body>
+<a href id="1yr">1yr</a>
+<a href id="1mon">1mon</a>
+<br>
+<script type="text/javascript">
+/*global App*/
+"use strict";
+
+(function(global){
+
+function Series(json) {
+	if (this.isTimeSeries(json)) {
+		this.initTimeSeries(json.name, json.keys, json.values);
+		this.timeSeries = true;
+	}
+	else {
+		this.initSeries(json.name, json.keys, json.values);
+		this.timeSeries = false;
+	}
+}
+/**
+* keys could either be '2013-05-17T00:00:00.000-04:00' or '123'
+* '2013-05-17T00:00:00.000-04:00' represents a time series, while '123' does not
+*/
+Series.prototype.isTimeSeries = function(json) {
+	return isNaN(json.keys[0]);
+}
+/**
+* length of dates and values should match and they couldn't be null
+* @param dates is an ordered (increasing) array of date string
+*/
+Series.prototype.initTimeSeries = function(name, dates, values) {
+	this.initSeries(name, dates, values);
+	this.x = [];
+	for (var i in dates) {
+		this.x.push(moment(dates[i]).tz('America/New_York'));
+	}
+};
+Series.prototype.initSeries = function(name, x, values) {
+	this.x = x;
+	this.values = values;
+	this.name = name;
+	this.cumHigh = false;
+	this.backCumLow = false;
+	this.backCumLowShift = 0;
+}
+Series.prototype.firstX = function(){
+	if (this.x.length===0) return null;
+	return this.x[0];
+};
+Series.prototype.lastX = function(){
+	if (this.x.length===0) return null;
+	return this.x[this.x.length-1];	
+};
+Series.prototype.min = function(firstX, lastX){
+	return this.m(firstX, lastX, Math.min);
+};
+Series.prototype.max = function(firstX, lastX) {
+	return this.m(firstX, lastX, Math.max);
+};
+Series.prototype.m = function(firstX, lastX, func) {
+	var from = this.geti(firstX);
+	var to = this.geti(lastX);
+	if (from==-1 || to==-1) return NaN;
+	var ret = this.values[from];
+	for (var i = from+1; i<=to ; i++) {
+		ret = func(ret, this.values[i]);
+	}
+	return ret;
+};
+/**
+* index of first x that is not small than given x
+*/
+Series.prototype.geti = function(x) {
+	var from = 0, to = this.x.length-1, mid;
+	while (from+1<to) {
+		mid = from + Math.floor((to-from)/2);
+		if (this.x[mid]==x) return mid;
+		else if (this.x[mid]<x) from = mid;
+		else to = mid;
+	}
+	for (var i = from; i<=to; i++) {
+		if (this.x[i]>=x) return i;
+	}
+	return -1;
+};
+Series.prototype.size = function(){
+	return this.x.length;
+};
+/**
+* @param series is an array of series
+*/
+function Render(id, width, height, series) {
+	//assume series in one render have the same type. either all time series or no time series
+	this.timeSeriesPlot = series[0].timeSeries;
+	this.container = this.createDiv("<canvas id='"+id+"' width='"+width+"' height='"+height+"'>");
+	this.container.style.overflow='auto';
+	this.titles = [];
+	this.ready = false;
+	this.addIndControl(series);
+	document.body.appendChild(this.container);
+	this.canvas = document.getElementById(id);
+	this.ctx = this.canvas.getContext("2d");
+	this.series = series;
+	this.margin = 50;
+	this.points = null;
+	this.offx = this.margin;
+	this.offy = this.canvas.height-this.margin;
+	this.pad = 0.1;
+	this.width = this.canvas.width-this.offx;
+	this.height = (1-2*this.pad)*this.offy;
+	this.reset();
+	this.ctx.translate(this.offx, this.offy);
+	this.canvasBuffer = document.createElement('canvas');
+	this.canvasBuffer.width = this.canvas.width;
+	this.canvasBuffer.height = this.canvas.height;
+	this.ctxBuffer = this.canvasBuffer.getContext('2d');
+	this.ctxBuffer.translate(this.offx, this.offy);
+	this.draw();
+	this.attachListners();
+}
+Render.prototype.createDiv = function(html) {
+	var div = document.createElement('div');
+	div.innerHTML = html;
+	return div;
+};
+Render.prototype.createH2 = function(id, text) {
+	var h2 = document.createElement('h2');
+	h2.innerHTML = text;
+	h2.id=id;
+	return h2;
+};
+Render.prototype.addIndControl = function(series){
+	var inputId, dashName, h2;
+	for (var i in series) {
+		dashName = series[i].name.replace(/ /g,"-");
+		h2 = this.createH2(dashName,'<span>'+series[i].name+'</span>');
+		this.titles.push(h2);
+		this.container.appendChild(h2);
+		if (!App.showInd) continue;
+		//add cum high
+		inputId = 'cum-high-'+dashName;
+		this.container.appendChild(this.createDiv("<label for="+inputId+">cumulative high of "+series[i].name+"</label><input type='checkbox' id='"+inputId+"'>"));
+		//add back cum low
+		inputId = 'back-cum-low-'+dashName;
+		this.container.appendChild(this.createDiv("<label for="+inputId+">backward cumulative low of "+series[i].name+"</label><input id='"+inputId+"' type='text'><input type='button' value='toggle' id='"+inputId+"-submit'>"));
+	}
+};
+Render.prototype.reset = function(){
+	//reset firstX, lastX, ymin, ymax, labels, yscale, xscale, points
+	this.firstX = Number.MAX_VALUE;
+	this.lastX = Number.MIN_VALUE;
+	for (var i in this.series) {
+		this.firstX = Math.min(this.firstX, this.series[i].firstX());
+		this.lastX = Math.max(this.lastX, this.series[i].lastX());
+	}
+	this.set();
+};
+Render.prototype.set = function(){
+	this.points = null;
+	this.ymin = Number.MAX_VALUE;
+	this.ymax = Number.MIN_VALUE;
+	for (var i in this.series) {
+		this.ymin = Math.min(this.ymin, this.series[i].min(this.firstX, this.lastX));
+		this.ymax = Math.max(this.ymax, this.series[i].max(this.firstX, this.lastX));
+	}
+	this.labels = this.looseLabel(this.ymin, this.ymax, 5);
+	this.ymin = Math.min(this.ymin, this.labels[0]);
+	this.ymax = Math.max(this.ymax, this.labels[this.labels.length-1]);
+	this.xscale = this.width/(this.lastX-this.firstX);
+	this.yscale = -this.height/(this.ymax-this.ymin);
+	console.log("reset");
+	console.log("xmin", this.firstX);
+	console.log("xmax", this.lastX);
+	console.log("ymin", this.ymin);
+	console.log("ymax", this.ymax);
+	console.log("xoff", this.firstX);
+	console.log("xscale", this.xscale);
+	console.log("yscale", this.yscale);
+};
+Render.prototype.drawYTicks = function(){
+	this.ctxBuffer.beginPath();
+	var i;
+	for (i in this.labels) {
+		var y = this.converty(this.labels[i]);
+		this.ctxBuffer.moveTo(0, y);
+		this.ctxBuffer.lineTo(this.width, y);
+		this.ctxBuffer.font = '12pt Calibri';
+		this.ctxBuffer.fillText(this.labels[i], -28, y);
+	}
+	this.ctxBuffer.strokeStyle = 'grey';
+	this.ctxBuffer.stroke();
+};
+Render.prototype.drawXTicks = function(){
+	this.ctxBuffer.beginPath();
+	var i,x,xLabels;
+	if (this.timeSeriesPlot) {
+		var year, month, date, yearChanged;
+		var firstDay = new Date(this.firstX);
+		year = firstDay.getFullYear();
+		month = firstDay.getMonth();
+		for (i in this.points) {
+			yearChanged = false;
+			x = this.points[i].x;
+			date = new Date(this.invx(x));
+			if (date.getFullYear()>year) yearChanged = true;
+			if (yearChanged || date.getMonth()>month) {
+				year = date.getFullYear();
+				month = date.getMonth();
+				this.ctxBuffer.moveTo(x, 0);
+				this.ctxBuffer.lineTo(x, yearChanged ? 10 : 5);
+				this.ctxBuffer.font = '12pt Calibri';
+				if (this.lastX - this.firstX < 13*30*24*60*60*1000)
+					this.ctxBuffer.fillText(year+'/'+(month+1), x-15, 25);
+				else if (yearChanged)
+					this.ctxBuffer.fillText(year, x-15, 25)
+			}
+		}
+	} else {
+		xLabels = this.looseLabel(this.firstX, this.lastX, 13);
+		for (i in xLabels) {
+			x = this.convertx(xLabels[i]);
+			this.ctxBuffer.moveTo(x, 0);
+			this.ctxBuffer.lineTo(x, 10);
+			this.ctxBuffer.font = '12pt Calibri';
+			this.ctxBuffer.fillText(xLabels[i], x, 25);
+		}
+	}
+	this.ctxBuffer.strokeStyle = 'grey';
+	this.ctxBuffer.stroke();
+}
+Render.prototype.drawAxis = function(){
+	this.ctxBuffer.beginPath();
+	this.ctxBuffer.moveTo(0, 0);
+	this.ctxBuffer.lineTo(0, -this.offy);
+	this.ctxBuffer.moveTo(0, 0);
+	this.ctxBuffer.lineTo(this.canvas.width-this.offx, 0);
+	this.ctxBuffer.strokeStyle = 'black';
+	this.ctxBuffer.stroke();
+};
+Render.prototype.draw = function(){
+	var i,r,g,b,color;
+	this.ready = false;
+	this.map = {};
+	this.ctx.clearRect(-this.offx, -this.offy, this.canvas.width, this.canvas.height);
+	this.ctxBuffer.clearRect(-this.offx, -this.offy, this.canvas.width, this.canvas.height);
+	this.drawAxis();
+	this.colors = [];
+	//draw series
+	var freq = 5.0 / this.series.length;
+	for (i in this.series) {
+		this.ctxBuffer.beginPath();
+		this.startSegment();
+		var from = this.series[i].geti(this.firstX);
+		var to = this.series[i].geti(this.lastX);
+		var j;
+		for (j = from; j<=to; j++) {
+			this.drawSegment(this.series[i].x[j], this.series[i].values[j]);
+		}
+		r = Math.floor(Math.sin(freq * i + 0) * (127) + 128);
+		g = Math.floor(Math.sin(freq * i + 1) * (127) + 128);
+		b = Math.floor(Math.sin(freq * i + 3) * (127) + 128);
+		color = 'rgb('+r+','+g+','+b+')';
+		this.colors.push(color);
+		this.ctxBuffer.strokeStyle = color;
+		this.ctxBuffer.stroke();
+		this.titles[i].firstChild.style.backgroundColor = color;
+		if (this.series[i].cumHigh) {
+			this.drawCumHigh(this.series[i], from, to);
+		}
+		if (this.series[i].backCumLow) this.drawBackCumLow(this.series[i], from, to, this.series[i].backCumLowShift);
+	}
+	if (!this.points) {
+		this.points = [];
+		for (var k in this.map) {
+			this.points.push({x:k, ys:this.map[k]});
+		}
+		this.points.sort(function(a,b){
+			return a.x-b.x;
+		});
+	}
+	this.drawYTicks();
+	this.drawXTicks();
+	this.ctx.drawImage(this.canvasBuffer,-this.offx,-this.offy);
+	this.ready = true;
+};
+Render.prototype.drawBackCumLow = function(series, from, to, shift) {
+	this.ctxBuffer.beginPath();
+	this.startSegment();
+	var low = series.values[to-shift];
+	var j;
+	for (j = to-shift; j>=from; j--) {
+		if (series.values[j]<low) {
+			low = series.values[j];
+		}
+		this.drawSegment(series.x[j], low);
+	}
+	this.ctxBuffer.strokeStyle = 'black';
+	this.ctxBuffer.stroke();
+};
+Render.prototype.drawCumHigh = function(series, from, to){
+	this.ctxBuffer.beginPath();
+	this.startSegment();
+	var high = series.values[from];
+	var j;
+	for (j = from ; j<=to ; j++) {
+		if (series.values[j]>high) {
+			high = series.values[j];
+		}
+		this.drawSegment(series.x[j], high);
+	}
+	this.ctxBuffer.strokeStyle = 'black';
+	this.ctxBuffer.stroke();
+};
+Render.prototype.startSegment = function(){
+	this.prex = null;
+	this.prey = null;
+};
+Render.prototype.drawSegment = function(date, v) {
+	var newx, newy;
+	newx = this.convertx(date);
+	newy = this.converty(v);
+	if (!this.points) {
+		if (!this.map[newx])
+			this.map[newx] = [];
+		this.map[newx].push(newy);
+	}
+	if (this.prex!==null && this.prey!==null) {
+		this.ctxBuffer.lineTo(newx, newy);
+	}
+	this.ctxBuffer.moveTo(newx, newy);
+	this.prex = newx;
+	this.prey = newy;
+};
+Render.prototype.convertx = function(x) {
+	return (x - this.firstX)*this.xscale;
+};
+Render.prototype.invx = function(x) {
+	return x/this.xscale+this.firstX;
+};
+Render.prototype.converty = function(y) {
+	return (y - this.ymin)*this.yscale-this.pad*this.offy;
+};
+Render.prototype.handleMousemove = function(){
+	var self = this, i;
+	if (!this.ready) return;
+	this.canvas.addEventListener('mousemove', function(evt) {
+		var mousePos = self.getMousePos(evt);
+		for (i in App.renders) {
+			App.renders[i].drawMouseInd(mousePos.x);
+		}
+	}, false);
+};
+//TODO: use requestanimationframe to draw indicator on mousemove
+Render.prototype.drawMouseInd = function(x) {
+	var i;
+	var xi = this.findClosestX(x);
+	// this.ctx.beginPath();
+	this.ctx.clearRect(-this.offx, -this.offy, this.canvas.width, this.canvas.height);
+	this.ctx.drawImage(this.canvasBuffer,-this.offx,-this.offy);
+	// this.ctx.fill();
+	if (this.timeSeriesPlot) {
+		this.ctx.font = '15pt Calibri';
+		this.ctx.fillText(new Date(this.invx(this.points[xi].x)), 25, -this.offy + 25);
+	}
+	for (i in this.points[xi].ys) {
+		this.ctx.beginPath();
+		this.ctx.arc(this.points[xi].x, this.points[xi].ys[i], 3, 0, 2*Math.PI);
+		this.ctx.fill();
+	}
+
+	this.ctx.moveTo(this.points[xi].x, 0);
+	this.ctx.lineTo(this.points[xi].x, -this.offy);
+	this.ctx.strokeStyle = 'grey';
+	this.ctx.stroke();
+};
+Render.prototype.handleMouseDown = function(){
+	var self = this;
+	this.canvas.addEventListener('mousedown', function(evt){
+		evt.preventDefault();
+		var mousePos = self.getMousePos(evt);
+		if (mousePos.y<0 || mousePos.y>self.offy) {
+			return;
+		}
+		self.doScale = true;
+		self.mouseDownFrom = mousePos.x;
+	});
+};
+Render.prototype.handleMouseUp = function(){
+	var self = this;
+	document.addEventListener('mouseup', function(evt){
+		evt.preventDefault();
+		if (!self.doScale) return;
+		self.doScale = false;
+		var mousePos = self.getMousePos(evt);
+		if (self.mouseDownFrom===mousePos.x) return;
+		for (var i in App.renders) {
+			App.renders[i].scale(self.mouseDownFrom, mousePos.x);
+		}
+	});
+};
+Render.prototype.handleDblClick = function(){
+	this.canvas.addEventListener('dblclick', function(e){
+		e.preventDefault();
+		for (var i in App.renders) {
+			App.renders[i].reset();
+			App.renders[i].draw();
+		}
+	});
+};
+Render.prototype.cumHighChange = function(){
+	var self = this, i, cumHighId;
+	function checkboxChange(i) {
+		return function() {
+			console.log("cumHigh of series", i, "is changed");
+			if (this.checked) self.series[i].cumHigh = true;
+			else self.series[i].cumHigh = false;
+			self.points = null;
+			self.draw();
+		};
+	}
+	for (i in this.series) {
+		cumHighId = "cum-high-"+this.series[i].name.replace(/ /g,"-");
+		document.getElementById(cumHighId).onchange = checkboxChange(i);
+	}
+};
+Render.prototype.backCumLowChange = function(){
+	var inputId, i, shiftInput, self = this;
+	function toggleBackCumLow(i){
+		return function(){
+			console.log("backCumLow changed i:", i);
+			shiftInput = document.getElementById('back-cum-low-'+self.series[i].name.replace(/ /g,"-"));
+			self.series[i].backCumLow = !self.series[i].backCumLow;
+			if (self.series[i].backCumLow) {
+				self.series[i].backCumLowShift = parseInt(shiftInput.value);
+				if (isNaN(self.series[i].backCumLowShift))
+					self.series[i].backCumLow = false;
+				else
+					console.log("shift:", self.series[i].backCumLowShift);
+			}
+			self.points = null;
+			self.draw();
+		};
+	}
+	for (i in this.series) {
+		inputId = 'back-cum-low-'+this.series[i].name.replace(/ /g,"-");
+		document.getElementById(inputId+"-submit").onclick = toggleBackCumLow(i);
+	}
+};
+Render.prototype.attachListners = function(){
+	this.handleMousemove();
+	this.handleMouseDown();
+	this.handleMouseUp();
+	this.handleDblClick();
+	if (!App.showInd) return;
+	this.cumHighChange();
+	this.backCumLowChange();
+};
+Render.prototype.scale = function(from, to) {
+	from = this.points[this.findClosestX(from)].x;
+	to = this.points[this.findClosestX(to)].x;
+	var f = this.invx(from);
+	var l = this.invx(to);
+	this.firstX = f;
+	this.lastX = l;
+	this.set();
+	this.draw();
+};
+Render.prototype.findClosestX = function(a) {
+	// console.log('a', a);
+	var fr = 0; var to = this.points.length-1, mid;
+	while (fr+1 < to) {
+		mid = fr + Math.floor((to-fr)/2);
+		if (this.points[mid].x==a) return mid;
+		else if (this.points[mid].x<a) fr = mid;
+		else to = mid;
+	}
+	var x = fr;
+	var diff = Math.abs(a-this.points[fr].x);
+	for (var i = fr+1; i<=to; i++) {
+		if (diff > Math.abs(a-this.points[i].x)) {
+			diff = Math.abs(a-this.points[i].x);
+			x = i;
+		}
+	}
+	return x;
+};
+Render.prototype.getMousePos = function(evt) {
+	var rect = this.canvas.getBoundingClientRect();
+	return {
+		x: evt.clientX - rect.left - this.offx,
+		y: this.offy - (evt.clientY - rect.top)
+	};
+};
+Render.prototype.looseLabel = function(min, max, nticks) {
+	var range = this.nicenum(max-min, 0);
+	var d = this.nicenum(range/(nticks-1), 1);
+	var graphmin = Math.floor(min/d)*d;
+	var graphmax = Math.ceil(max/d)*d;
+	var nfrac = Math.max(-Math.floor(Math.log(d)/Math.log(10)), 0);	/* # of fractional digits to show */
+	var labels = [];
+	for (var x=graphmin; x<graphmax+0.5*d; x+=d) {
+		//put a tick mark at x, with nfrac fraction digits
+		labels.push(x.toFixed(nfrac));
+	}
+	return labels;
+};
+
+/**
+ * nicenum: find a "nice" number approximately equal to x.
+ * Round the number if round=1, take ceiling if round=0
+ */
+Render.prototype.nicenum = function(x, round) {
+    var expv = Math.floor(Math.log(x)/Math.log(10));
+    var f = x/Math.pow(10, expv);		/* between 1 and 10 */
+    var nf;
+    if (round) {
+		if (f<1.5) nf = 1;
+		else if (f<3) nf = 2;
+		else if (f<7) nf = 5;
+		else nf = 10;
+    } else {
+		if (f<=1) nf = 1;
+		else if (f<=2) nf = 2;
+		else if (f<=5) nf = 5;
+		else nf = 10;
+	}
+    return nf*Math.pow(10, expv);
+};
+Render.prototype.to1yrWindow = function(){
+	if (!this.timeSeriesPlot) return;
+	var lastX = new Date(this.lastX);
+	this.firstX = Math.max(this.firstX, lastX.setFullYear(lastX.getFullYear()-1));
+	this.set();
+	this.draw();
+};
+Render.prototype.to1monWindow = function(){
+	if (!this.timeSeriesPlot) return;
+	var lastX = new Date(this.lastX);
+	this.firstX = Math.max(this.firstX, lastX.setMonth(lastX.getMonth()-1));
+	this.set();
+	this.draw();
+};
+var App = global.App = {
+	showInd: {showInd}, // jshint ignore:line
+	series: {}, // Map<String, List<Series>>
+	renders: [],
+	init: function(){
+		moment.tz.add([
+		    'America/Los_Angeles|PST PDT|80 70|0101|1Lzm0 1zb0 Op0',
+		    'America/New_York|EST EDT|50 40|0101|1Lz50 1zb0 Op0'
+		]);
+		var i, j;
+		var data = {data}; // Map<String, List<JSON>>
+		var figures = [];
+		for (i in data) {
+			figures.push(i);
+		}
+		figures.sort();
+		var height = Math.max(300, 600/figures.length);
+		var width = 900;
+		for (i = 0; i<figures.length; i++) {
+			App.series[i] = [];
+			for (j in data[figures[i]]) {
+				App.series[i].push(new Series(data[figures[i]][j]));
+			}
+			App.renders.push(new Render('canvas'+i, width, height, App.series[i]));
+		}
+		App.attachListners();
+	},
+	attachListners: function(){
+		document.getElementById("1yr").onclick = function(e){
+			e.preventDefault();
+			console.log("change to 1 year window");
+			var i;
+			for (i in App.renders) {
+				App.renders[i].to1yrWindow();
+			}
+		};
+		document.getElementById("1mon").onclick = function(e){
+			e.preventDefault();
+			console.log("change to 1 month window");
+			var i;
+			for (i in App.renders) {
+				App.renders[i].to1monWindow();
+			}
+		};
+	}
+};
+App.init();
+
+})(window);
+</script>
+</body>
+</html>
